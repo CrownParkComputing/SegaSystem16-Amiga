@@ -1,0 +1,42 @@
+# Build artifacts
+obj/
+obj_rtg/
+build/
+*.o
+*.a
+*.so
+*.exe
+
+# Rust build artifacts
+target/
+**/target/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# ROM images - never tracked
+*.bin
+roms/
+*.rom
+
+# Debug output
+*.ppm
+
+# Binary executables (AmigaOS loadseg or ELF)
+Shinobi
+GoldenAxe
+
+# IDE / editor
+*.swp
+*.swo
+*~
+.DS_Store
+.vscode/
+.idea/
+
+# HDF disk images
+*.hdf
+*.uae
+*.zip
