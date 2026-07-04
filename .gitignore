@@ -24,9 +24,10 @@ roms/
 # Debug output
 *.ppm
 
-# Binary executables (AmigaOS loadseg or ELF)
-Shinobi
-GoldenAxe
+# Binary executables (AmigaOS loadseg or ELF) -- anchor to the game-root exe so
+# these patterns do NOT also match the Shinobi/ game DIRECTORY (which must be tracked).
+/Shinobi/Shinobi
+/Golden_Axe/GoldenAxe
 
 # IDE / editor
 *.swp
