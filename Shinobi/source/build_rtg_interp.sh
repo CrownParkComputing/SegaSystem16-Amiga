@@ -23,8 +23,6 @@ mkdir -p "$STAGE_DIR" "$OBJ_DIR" "$DIST_DIR"
 
 echo "== build clean Shinobi loader (ROMs are loaded from user-supplied zip/files at runtime) =="
 
-echo "== build Shinobi RTG bezel (Bezel Project artwork, RGB332 indexed, 864x486) =="
-python3 "$SRC_DIR/tools/make_shinobi_rtg_bezel.py" >/dev/null
 
 GCC_COMMON=(
   m68k-amigaos-gcc -m68020 -noixemul -O2 -fomit-frame-pointer
@@ -75,7 +73,6 @@ VASM=(vasmm68k_mot -I "$SRC_DIR" -I "$SRC_DIR/amiga" -I "$SRC_DIR/hal" -I "$STAG
 "${VASM[@]}" -o "$OBJ_DIR/amiga.o"       "$SRC_DIR/amiga/amiga.s"
 "${VASM[@]}" -o "$OBJ_DIR/hal_sysvars.o" "$SRC_DIR/hal/hal_sysvars.s"
 "${VASM[@]}" -o "$OBJ_DIR/pl_support.o"  "$SRC_DIR/hal/pl_support.s"
-"${VASM[@]}" -o "$OBJ_DIR/shinobi_rtg_bezeldata.o" "$SRC_DIR/hal/shinobi_rtg_bezeldata.s"
 "${AS[@]}" "$AI_DIR/arcade_intro_glue.s" -o "$OBJ_DIR/arcade_intro_glue.o"
 "${AS[@]}" "$AI_DIR/tc_ptplayer.68k" -o "$OBJ_DIR/tc_ptplayer.o"
 "${AS[@]}" "$AI_DIR/tc_ptplayer_glue.s" -o "$OBJ_DIR/tc_ptplayer_glue.o"
@@ -92,7 +89,6 @@ vlink -b amigahunk -Bstatic -Cexestack -mrel -sc \
   "$OBJ_DIR/shinobi_rtg_main.o" "$OBJ_DIR/shinobi_interp.o" \
   "$OBJ_DIR/m68kcpu.o" "$OBJ_DIR/m68kops.o" "$OBJ_DIR/m68kdasm.o" "$OBJ_DIR/softfloat.o" \
   "$OBJ_DIR/shinobi_hwrender.o" "$OBJ_DIR/shinobi_audio_amiga.o" "$OBJ_DIR/shinobi_sound.o" "$OBJ_DIR/z80.o" \
-  "$OBJ_DIR/shinobi_rtg_bezeldata.o" \
   "$OBJ_DIR/shinobi_ym2151.o" "$OBJ_DIR/ymfm_opm.o" \
   "$OBJ_DIR/shinobi_assets.o" "$OBJ_DIR/shinobi_interp_stubs.o" \
   "$OBJ_DIR/arcade_intro.o" "$OBJ_DIR/arcade_intro_glue.o" "$OBJ_DIR/tc_ptplayer.o" \

@@ -84,6 +84,16 @@ uint8_t shinobi_ym2151_read_status(void)
 int shinobi_ym2151_sample(void)
 {
     static uint32_t step = 0, frac = 0;
+    /* Decimating low-pass state (Q8 fixed point). The YM2151 runs at
+     * clock/64 = 62500Hz but we output at 22050Hz. The old code averaged only
+     * the last 2 of the ~3 generated native samples, which is no anti-alias
+     * filter at all (first null at 31250Hz): the YM2151 NOISE generator (used
+     * for Shinobi's percussion) is broadband to ~31kHz, so everything above the
+     * 11025Hz output Nyquist folded straight back as a harsh near-Nyquist buzz
+     * ("crash noise"). Run a proper 2-pole low-pass over EVERY native sample and
+     * decimate by sampling its output, so out-of-band content is removed before
+     * it can alias. Integer fixed point keeps it fast on the FPU-less 68020. */
+    static long lp1 = 0, lp2 = 0;
     if (step == 0)
         step = (uint32_t)(((uint64_t)(SH_YM2151_CLOCK / 64) << 16) / (uint32_t)SH_OUT_RATE);
     frac += step;
@@ -91,17 +101,17 @@ int shinobi_ym2151_sample(void)
     frac &= 0xffff;
     if (count < 1) count = 1;
 
+    /* alpha ~= 0.34 (22/64): two cascaded 1-pole sections give ~7kHz/12dB-oct
+     * at 62500Hz, ~-14dB at the 11025Hz Nyquist and steeper above, which tames
+     * the aliased noise while preserving the FM voices' <7kHz musical band. */
     ymfm::ym2151::output_data out;
-    long sum = 0;
-    int navg = 0;
     for (int i = 0; i < count; i++) {
         chip()->generate(&out, 1);
-        if (i >= count - 2) {
-            sum += (out.data[0] + out.data[1]) >> 1;
-            navg++;
-        }
+        long mono = ((long)out.data[0] + (long)out.data[1]) >> 1;   /* +-32768 */
+        lp1 += (((mono << 8) - lp1) * 22) >> 6;
+        lp2 += ((lp1 - lp2) * 22) >> 6;
     }
-    int s = (int)(sum / navg);
+    int s = (int)(lp2 >> 8);
     if (s > 32767) s = 32767;
     if (s < -32768) s = -32768;
     return s;

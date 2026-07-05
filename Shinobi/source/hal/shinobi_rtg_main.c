@@ -1,4 +1,4 @@
-/* shinobi_rtg_main.c -- Shinobi (System 16B) RTG/chunky 864x486 presenter.
+/* shinobi_rtg_main.c -- Shinobi (System 16B) RTG presenter (Whitty native-view).
  *
  * Opens the same class of 8-bit Picasso96 screen used by the working RTG ports,
  * renders the native 320x224 arcade frame to a chunky buffer, scales it to the
@@ -21,7 +21,6 @@
 #include <string.h>
 #include "arcade_intro.h"
 #include "shinobi_assets.h"
-#include "shinobi_rtg_bezel.h"
 
 extern int  shinobi_dyntrans_init(void);
 extern void shinobi_dyntrans_frame(void);
@@ -39,7 +38,6 @@ extern const unsigned char *shinobi_chunky(void);     /* SW*SH chunky pens */
 extern const unsigned char *shinobi_pal256(int *n);   /* reduced 256-pen RGB */
 extern void shinobi_dims(int *w, int *h);
 extern const unsigned char ai_default_mod[], ai_default_mod_end[];
-extern const unsigned char shinobi_rtg_bezel[], shinobi_rtg_bezel_end[];
 
 struct IntuitionBase *IntuitionBase = 0;
 extern struct GfxBase *GfxBase;                 /* defined in shinobi_hwrender.c (shared) */
@@ -59,6 +57,7 @@ static uint8_t last_pal[256*3];
 static int g_ok, g_init_attempted, g_init_failed, SW_, SH_, rtg_ok, rtg_w, rtg_h;
 static int last_pal_n = -1;
 static int dispX, dispY, dispW, dispH, layout_ready;
+static int s_int_scale = 1;           /* integer scale of the play window */
 static int bezel_active;
 static char notify_msg[32];
 static int notify_ticks;
@@ -77,6 +76,7 @@ static ULONG eclock_rate, frame_ticks, next_tick;
 #define RK_ESC    0x45
 #define RK_F5     0x54
 #define RK_F6     0x55
+#define RK_F9     0x58
 #define RK_F10    0x59
 #define RK_LCTRL  0x63
 #define RK_LALT   0x64
@@ -191,6 +191,39 @@ static const ai_config shinobi_intro_cfg = {
     "READY  -  FIRE START OR F6 RESUME SAVE"
 };
 
+
+/* Pick a real RTG (foreign-monitor) 8-bit mode closest to 864x486 from the
+ * display database. On AGS/PiMiga the custom Whitty mode ID doesn't exist and
+ * a failed open used to fall back to a native PAL planar screen -- tiny window,
+ * chip RAM, C2P conversion every frame = crawl. RTG-only fixes all of that. */
+static ULONG pick_rtg_mode(int *ow, int *oh)
+{
+    ULONG best = INVALID_ID, id = INVALID_ID;
+    LONG bestscore = 0x7fffffff;
+    while ((id = NextDisplayInfo(id)) != INVALID_ID) {
+        struct DisplayInfo dsp;
+        struct DimensionInfo dim;
+        int w, h;
+        LONG score;
+        if (!GetDisplayInfoData(0, (UBYTE*)&dsp, sizeof dsp, DTAG_DISP, id)) continue;
+        if (dsp.NotAvailable) continue;
+        if (!(dsp.PropertyFlags & DIPF_IS_FOREIGN)) continue;   /* RTG only */
+        if (!GetDisplayInfoData(0, (UBYTE*)&dim, sizeof dim, DTAG_DIMS, id)) continue;
+        if (dim.MaxDepth < 8) continue;
+        w = dim.Nominal.MaxX - dim.Nominal.MinX + 1;
+        h = dim.Nominal.MaxY - dim.Nominal.MinY + 1;
+        if (w < 320 || h < 400 || w > 1600 || h > 1300) continue;
+        score = (w > RTG_W ? w - RTG_W : RTG_W - w) + (h > RTG_H ? h - RTG_H : RTG_H - h);
+        if (score < bestscore) {
+            bestscore = score;
+            best = id;
+            *ow = w;
+            *oh = h;
+        }
+    }
+    return best;
+}
+
 int hal_game_should_exit(void)
 {
     return g_quit;
@@ -285,33 +318,21 @@ static void diag_fill(uint8_t r, uint8_t g, uint8_t b)
 static void compute_layout(void)
 {
     int i;
+    /* bezel removed: the full screen is the play area (black surround) */
     int bx = 0, by = 0, bw = rtg_w, bh = rtg_h;
-    if (rtg_w == SHINOBI_RTG_W && rtg_h == SHINOBI_RTG_H) {
-        bx = SHINOBI_GAME_X;
-        by = SHINOBI_GAME_Y;
-        bw = SHINOBI_GAME_W;
-        bh = SHINOBI_GAME_H;
-    }
-    dispW = bw;
-    dispH = (bw * SH_) / SW_;
-    if (dispH > bh) {
-        dispH = bh;
-        dispW = (bh * SW_) / SH_;
+    /* NATIVE view: largest integer scale that fits (crisp, even scroll) */
+    {
+        int n = bw / SW_;
+        int nh = bh / SH_;
+        if (nh < n) n = nh;
+        if (n < 1) n = 1;
+        if (n > 3) n = 3;
+        s_int_scale = n;
+        dispW = SW_ * n;
+        dispH = SH_ * n;
     }
     if (dispW > rtg_w) dispW = rtg_w;
     if (dispH > rtg_h) dispH = rtg_h;
-    if (dispW > SW_ * 2 || dispH > SH_ * 2) {
-        dispW = SW_ * 2;
-        dispH = SH_ * 2;
-        if (dispW > bw) {
-            dispW = bw;
-            dispH = (bw * SH_) / SW_;
-        }
-        if (dispH > bh) {
-            dispH = bh;
-            dispW = (bh * SW_) / SH_;
-        }
-    }
     if (dispW > DISP_MAXW) dispW = DISP_MAXW;
     if (dispH > DISP_MAXH) dispH = DISP_MAXH;
     dispX = bx + (bw - dispW) / 2;
@@ -323,18 +344,87 @@ static void compute_layout(void)
     layout_ready = 1;
 }
 
+
+static int notify_glyph(char c);
+static const uint8_t notify_font5x7[][7];
+
+/* screen-clamped fills/text for backdrop UI (notify_* clamp to the PLAY RECT;
+ * using them outside it made x1<x0 -> (size_t)negative memset -> crash). */
+static void ui_fill(int x0, int y0, int w, int h, uint8_t pen)
+{
+    int x1 = x0 + w, y1 = y0 + h;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > rtg_w) x1 = rtg_w;
+    if (y1 > rtg_h) y1 = rtg_h;
+    if (x1 <= x0 || y1 <= y0) return;
+    for (int y = y0; y < y1; y++)
+        memset(rtg_frame + (size_t)y * rtg_w + x0, pen, (size_t)(x1 - x0));
+}
+static void ui_draw_text(const char *s, int x, int y, int scale, uint8_t pen)
+{
+    for (; *s; s++, x += 6 * scale) {
+        const uint8_t *g = notify_font5x7[notify_glyph(*s)];
+        for (int gy = 0; gy < 7; gy++)
+            for (int gx = 0; gx < 5; gx++)
+                if (g[gy] & (1 << (4 - gx)))
+                    ui_fill(x + gx * scale, y + gy * scale, scale, scale, pen);
+    }
+}
+
+/* Border around the play window + controls box on the left (pens shared with
+ * the notification UI: 0 black, 36 dim, 255 bright). Part of the backdrop --
+ * repainted whenever restore_rtg_bezel() runs. */
+static void draw_ui_frame(void)
+{
+    if (!layout_ready) compute_layout();
+    {
+        int x0 = dispX - 8, y0 = dispY - 8, w = dispW + 16, h = dispH + 16;
+        if (x0 < 0) { w += x0; x0 = 0; }
+        if (y0 < 0) { h += y0; y0 = 0; }
+        if (x0 + w > rtg_w) w = rtg_w - x0;
+        if (y0 + h > rtg_h) h = rtg_h - y0;
+        ui_fill(x0, y0, w, 2, 255);
+        ui_fill(x0, y0 + h - 2, w, 2, 255);
+        ui_fill(x0, y0, 2, h, 255);
+        ui_fill(x0 + w - 2, y0, 2, h, 255);
+        ui_fill(x0 + 3, y0 + 3, w - 6, 1, 36);
+        ui_fill(x0 + 3, y0 + h - 4, w - 6, 1, 36);
+        ui_fill(x0 + 3, y0 + 3, 1, h - 6, 36);
+        ui_fill(x0 + w - 4, y0 + 3, 1, h - 6, 36);
+    }
+    if (dispX >= 190) {
+        static const char *const lines[] = {
+            "SHINOBI", "", "ARROWS MOVE", "SPACE ATTACK", "ALT SHURIKEN", "",
+            "5 COIN", "1 START", "", "F5 SAVE", "F6 LOAD", "F10 DIPS", "ESC QUIT", 0
+        };
+        int scale = 2, lh = 7 * scale + 6;
+        int nl = 0, i2;
+        int bwd, bht, bx, by;
+        while (lines[nl]) nl++;
+        bwd = 170;
+        bht = nl * lh + 24;
+        bx = (dispX - 8 - bwd) / 2; if (bx < 4) bx = 4;
+        by = dispY + (dispH - bht) / 2; if (by < 4) by = 4;
+        ui_fill(bx, by, bwd, bht, 0);
+        ui_fill(bx, by, bwd, 2, 255);
+        ui_fill(bx, by + bht - 2, bwd, 2, 255);
+        ui_fill(bx, by, 2, bht, 255);
+        ui_fill(bx + bwd - 2, by, 2, bht, 255);
+        for (i2 = 0; i2 < nl; i2++)
+            ui_draw_text(lines[i2], bx + 12, by + 12 + i2 * lh, scale,
+                             i2 == 0 ? 255 : 36);
+    }
+}
 static void restore_rtg_bezel(void)
 {
     size_t n;
     if (!rtg_ok || !scr || !rtg_frame)
         return;
     n = (size_t)rtg_w * rtg_h;
-    if (rtg_w == SHINOBI_RTG_W && rtg_h == SHINOBI_RTG_H &&
-        (size_t)(shinobi_rtg_bezel_end - shinobi_rtg_bezel) >= n) {
-        memcpy(rtg_frame, shinobi_rtg_bezel, n);
-    } else {
-        memset(rtg_frame, 0, n);
-    }
+    /* black backdrop + border + controls box */
+    memset(rtg_frame, 0, n);
+    draw_ui_frame();
     WriteChunkyPixels(present_rp(), 0, 0, rtg_w - 1, rtg_h - 1, rtg_frame, rtg_w);
     bezel_active = 1;
 }
@@ -343,6 +433,7 @@ static void restore_rtg_bezel(void)
 static void scale_to_rtg(void)
 {
     const unsigned char *src = shinobi_chunky();
+    if (!layout_ready) compute_layout();
     int last_sy = -1;
     if (!layout_ready) compute_layout();
     if (dispW == SW_ * 2 && dispH == SH_ * 2) {
@@ -551,6 +642,11 @@ static void poll_input(void)
     if ((keydown[RK_F10] && !kf10) || (dip_now && !pdip)) {
         shinobi_audio_amiga_close();
         ai_dip_open(&shinobi_dip_cfg);
+        /* the DIP overlay reloads the screen palette for its own colours; the
+         * game palette is unchanged, so upload_palette() would skip the re-upload
+         * (cache hit) and leave the menu palette -> game colours all wrong. Force
+         * it, like the F6/load-state path. */
+        invalidate_palette_cache();
         upload_palette();
         restore_rtg_bezel();
         shinobi_audio_amiga_open();
@@ -633,11 +729,16 @@ void hal_game_init(void)
     GfxBase       = (struct GfxBase*)OpenLibrary((CONST_STRPTR)"graphics.library",40);
     if (!IntuitionBase || !GfxBase) return;
 
-    ULONG mode = BestModeID(BIDTAG_NominalWidth, RTG_W, BIDTAG_NominalHeight, RTG_H,
-                            BIDTAG_DesiredWidth, RTG_W, BIDTAG_DesiredHeight, RTG_H,
-                            BIDTAG_Depth, 8, TAG_DONE);
+    int mw = RTG_W, mh = RTG_H;
+    ULONG mode = pick_rtg_mode(&mw, &mh);
+    if (mode == INVALID_ID) {
+        mw = RTG_W; mh = RTG_H;
+        mode = BestModeID(BIDTAG_NominalWidth, RTG_W, BIDTAG_NominalHeight, RTG_H,
+                          BIDTAG_DesiredWidth, RTG_W, BIDTAG_DesiredHeight, RTG_H,
+                          BIDTAG_Depth, 8, TAG_DONE);
+    }
     if (mode == INVALID_ID) mode = RTG_MODE_ID;
-    scr = OpenScreenTags(0, SA_DisplayID,mode, SA_Width,RTG_W, SA_Height,RTG_H,
+    scr = OpenScreenTags(0, SA_DisplayID,mode, SA_Width,mw, SA_Height,mh,
                          SA_Depth,8, SA_Quiet,1, SA_Type,CUSTOMSCREEN, SA_ShowTitle,0, TAG_END);
     if (!scr)
         scr = OpenScreenTags(0, SA_Width,RTG_W, SA_Height,RTG_H, SA_Depth,8,
@@ -656,6 +757,7 @@ void hal_game_init(void)
     if (win) { ScreenToFront(scr); ActivateWindow(win); }
     if (!win) return;
     open_timer();
+    SetTaskPri(FindTask(0), 5);   /* stay ahead of Workbench background tasks */
     rtg_ok = 1;
     clear_screen_black();
 
@@ -665,6 +767,20 @@ void hal_game_init(void)
     if (!g_ok) { diag_fill(0xC0,0x00,0x00); return; }
     upload_palette();
     restore_rtg_bezel();
+    /* show which RTG mode we landed on (answers "what res are we really at") */
+    {
+        char m[32]; int n = 0, v, d;
+        const char *p = "RTG ";
+        while (*p) m[n++] = *p++;
+        v = rtg_w; d = 1; while (v / d >= 10) d *= 10;
+        while (d) { m[n++] = (char)('0' + (v / d) % 10); d /= 10; }
+        m[n++] = 'X';
+        v = rtg_h; d = 1; while (v / d >= 10) d *= 10;
+        while (d) { m[n++] = (char)('0' + (v / d) % 10); d /= 10; }
+        m[n] = 0;
+        set_notification(m);
+        flash_notification_now();
+    }
     shinobi_audio_amiga_open();
 }
 
@@ -686,6 +802,24 @@ void hal_game_frame(void)
         upload_palette();
     if (!bezel_active)
         restore_rtg_bezel();
+    /* Auto render-skip: if the machine can't paint at 60Hz, drop paints -- the
+     * 68000 emulation keeps full speed, so the GAME never slows down. Cap the
+     * skip run so the screen always refreshes. */
+    {
+        static int skiprun;
+        int behind = 0;
+        if (TimerBase && frame_ticks) {
+            struct EClockVal ev;
+            ReadEClock(&ev);
+            behind = (LONG)(ev.ev_lo - next_tick) > (LONG)frame_ticks;
+        }
+        if (behind && skiprun < 3) {
+            skiprun++;
+            frame_pace();
+            return;
+        }
+        skiprun = 0;
+    }
     scale_to_rtg();
     draw_notification();
     WriteChunkyPixels(present_rp(), dispX, dispY, dispX + dispW - 1, dispY + dispH - 1,
