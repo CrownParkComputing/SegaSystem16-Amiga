@@ -1,0 +1,12 @@
+[package]
+name = "z80_recompiler"
+version = "0.1.0"
+edition = "2021"
+description = "Z80 -> Rust static recompiler (host tool, x86). Decodes a Z80 ROM range and EMITS a no_std Rust crate whose `run()` reproduces the routine on a Z80State, to be compiled to native 68k by rustc and validated on m68k-rs vs z80.c."
+
+[[bin]]
+name = "z80_recompiler"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
