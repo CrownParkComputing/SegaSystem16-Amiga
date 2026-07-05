@@ -568,7 +568,10 @@ void shinobi_dyntrans_frame(void){
         remaining -= used > 0 ? used : slice;
     }
     m68k_set_irq(0);
-    frame_rendered = ((frame_counter++ & 1u) == 0);
-    if (frame_rendered)
-        shinobi_render(gbase);
+    /* Render EVERY frame (was every other = 30fps display). The main loop is
+     * EClock-paced with catch-up, and under JIT the emulated CPU has headroom,
+     * so a 60fps repaint just makes it smooth. */
+    frame_counter++;
+    frame_rendered = 1;
+    shinobi_render(gbase);
 }
