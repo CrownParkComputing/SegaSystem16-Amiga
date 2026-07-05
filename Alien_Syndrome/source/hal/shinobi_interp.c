@@ -512,6 +512,16 @@ static void write_bytes(unsigned a, unsigned v, int size)
         mapper_write(a, v, size);
         return;
     }
+    /* 315-5195 memory-mapper register MIRROR at 0xC00000. Alien Syndrome's boot
+     * ROM programs its region-config table to 0xC00020 (instr @guest 0x12ac)
+     * rather than the usual 0xFE0020. off=(a>>1)&0x1f is identical (0x10) for
+     * both, so this is equivalent to the 0xFE0000 path. Without it the region
+     * bases stay 0 -> high work-RAM (0xff0000+) and the stack never map -> the
+     * first rts pops 0xffffffff -> illegal-instruction lock -> black screen. */
+    if (a >= 0xC00000 && a < 0xC00040) {
+        mapper_write(a, v, size);
+        return;
+    }
     uint8_t *p = region_ptr(a);
     if (!p) return;
     int changed = 0;
