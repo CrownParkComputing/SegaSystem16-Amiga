@@ -1,8 +1,9 @@
 #!/bin/bash
-# Build Shinobi (Sega System 16B) as a user-mode RTG presenter using the Musashi
-# 68000 interpreter. This is the safest "bring it to life" build: real System 16
-# game logic runs in C emulation, shinobi_hwrender.c paints a 320x224 chunky
-# frame, and shinobi_rtg_main.c scales it to a Picasso96/uaegfx RTG screen.
+# Build Shadow Dancer (shdancer, System 16B-compatible) as a user-mode RTG
+# presenter using the Musashi 68000 interpreter. This is the safest "bring it to
+# life" build: real System 16 game logic runs in C emulation, shinobi_hwrender.c
+# paints a 320x224 chunky frame, and shinobi_rtg_main.c scales it to a
+# Picasso96/uaegfx RTG screen.
 set -euo pipefail
 
 export PATH="${AMIGA_GCC_BIN:-/home/jon/amiga-amigaos/bin}:$HOME/.local/bin:$PATH"
@@ -15,15 +16,15 @@ if [ -z "$AI_DIR" ] || [ ! -d "$AI_DIR" ]; then
   exit 1
 fi
 BUILD_DIR="$GAME_DIR/build"
-STAGE_DIR="$BUILD_DIR/shinobi"
-OBJ_DIR="$BUILD_DIR/shinobi_interp_obj"
+STAGE_DIR="$BUILD_DIR/shadow_dancer"
+OBJ_DIR="$BUILD_DIR/shadow_dancer_interp_obj"
 DIST_DIR="$GAME_DIR/dist"
 
 mkdir -p "$STAGE_DIR" "$OBJ_DIR" "$DIST_DIR"
 
-echo "== build clean Shinobi loader (ROMs are loaded from user-supplied zip/files at runtime) =="
+echo "== build clean Shadow Dancer loader (ROMs are loaded from user-supplied zip/files at runtime) =="
 
-echo "== build Shinobi RTG bezel (Bezel Project artwork, RGB332 indexed, 864x486) =="
+echo "== build Shadow Dancer RTG bezel (Bezel Project artwork, RGB332 indexed, 864x486) =="
 python3 "$SRC_DIR/tools/make_shinobi_rtg_bezel.py" >/dev/null
 
 GCC_COMMON=(
@@ -56,7 +57,7 @@ echo "== compile Musashi 68000 core =="
 "${GCC_COMMON[@]}" -Wno-incompatible-pointer-types -c "$SRC_DIR/cores/m68k/m68kdasm.c" -o "$OBJ_DIR/m68kdasm.o"
 "${GCC_COMMON[@]}" -Wno-incompatible-pointer-types -c "$SRC_DIR/cores/m68k/softfloat/softfloat.c" -o "$OBJ_DIR/softfloat.o"
 
-echo "== compile Shinobi interpreter, RTG presenter, and painter =="
+echo "== compile Shadow Dancer interpreter, RTG presenter, and painter =="
 "${GCC_COMMON[@]}" -c "$SRC_DIR/hal/shinobi_interp.c" -o "$OBJ_DIR/shinobi_interp.o"
 "${GCC_COMMON[@]}" -c "$SRC_DIR/hal/shinobi_rtg_main.c" -o "$OBJ_DIR/shinobi_rtg_main.o"
 "${GCC_COMMON[@]}" -c "$SRC_DIR/hal/shinobi_hwrender.c" -o "$OBJ_DIR/shinobi_hwrender.o"
@@ -98,16 +99,16 @@ vlink -b amigahunk -Bstatic -Cexestack -mrel -sc \
   "$OBJ_DIR/arcade_intro.o" "$OBJ_DIR/arcade_intro_glue.o" "$OBJ_DIR/tc_ptplayer.o" \
   "$OBJ_DIR/tc_ptplayer_glue.o" "$OBJ_DIR/intro_mod.o"
 
-cp -f "$BUILD_DIR/shinobi_interp" "$GAME_DIR/Shinobi"
-ls -lh "$GAME_DIR/Shinobi"
+cp -f "$BUILD_DIR/shinobi_interp" "$GAME_DIR/ShadowDancer"
+ls -lh "$GAME_DIR/ShadowDancer"
 
 echo "== build bootable RTG HDF =="
-BOOT_DIR="$BUILD_DIR/shinobi_interp_boot"
+BOOT_DIR="$BUILD_DIR/shadow_dancer_interp_boot"
 rm -rf "$BOOT_DIR"
 mkdir -p "$BOOT_DIR/s"
-cp -f "$BUILD_DIR/shinobi_interp" "$BOOT_DIR/Shinobi"
+cp -f "$BUILD_DIR/shinobi_interp" "$BOOT_DIR/ShadowDancer"
 cat > "$BOOT_DIR/s/startup-sequence" <<'EOF'
-; Shinobi RTG direct boot, based on the supplied RTG/Picasso96 boot disk.
+; Shadow Dancer RTG direct boot, based on the supplied RTG/Picasso96 boot disk.
 
 C:SetPatch QUIET
 C:Version >NIL:
@@ -153,14 +154,14 @@ C:ConClip
 C:Wait 2 SECS
 
 Path >NIL: RAM: C: SYS:Utilities SYS:System S: SYS:Prefs SYS:WBStartup SYS:Tools
-Echo "Shinobi RTG"
+Echo "Shadow Dancer RTG"
 Stack 65536
-SYS:Shinobi
+SYS:ShadowDancer
 C:UAEquit
 EndCLI >NIL:
 EOF
 
-HDF="$DIST_DIR/Shinobi_RTG.hdf"
+HDF="$DIST_DIR/ShadowDancer_RTG.hdf"
 rm -f "$HDF"
 BASE_HDF="/home/jon/Amiberry/HardDrives/RTG_boot_template.hdf"
 if [ ! -f "$BASE_HDF" ]; then
@@ -171,15 +172,15 @@ if [ ! -f "$BASE_HDF" ]; then
   exit 1
 fi
 cp -f "$BASE_HDF" "$HDF"
-xdftool "$HDF" delete Shinobi >/dev/null 2>&1 || true
-xdftool "$HDF" delete Shinobi.info >/dev/null 2>&1 || true
+xdftool "$HDF" delete ShadowDancer >/dev/null 2>&1 || true
+xdftool "$HDF" delete ShadowDancer.info >/dev/null 2>&1 || true
 xdftool "$HDF" delete S/startup-sequence >/dev/null 2>&1 || true
 xdftool "$HDF" delete roms >/dev/null 2>&1 || true
-xdftool "$HDF" write "$BUILD_DIR/shinobi_interp" Shinobi
+xdftool "$HDF" write "$BUILD_DIR/shinobi_interp" ShadowDancer
 xdftool "$HDF" write "$BOOT_DIR/s/startup-sequence" S/startup-sequence
 
-# NOTE: the HDF is created ROM-free on purpose. Shinobi's shinobi6 ROMs
-# (epr-11360.a7 etc.) are injected separately into roms/shinobi6 by the
+# NOTE: the HDF is created ROM-free on purpose. Shadow Dancer's shdancer ROMs
+# (epr-12774b.a6 etc.) are injected separately into roms/shdancer by the
 # install/import step or the shared ROM folder at runtime.
 
-echo "DONE -> $GAME_DIR/Shinobi and $HDF"
+echo "DONE -> $GAME_DIR/ShadowDancer and $HDF"

@@ -535,20 +535,19 @@ static void install_bank(uint8_t data)
 {
     if (!shinobi_rom_sample)
         return;
-    /* The packaged unprotected set is Shinobi set 6 on Sega ROM board
-     * 171-5521: one 0x20000 sample ROM at A11. MAME and FBNeo both tag this
-     * set as 5521, not 5358. Using the 5358 active-low ROM-select formula
-     * picks the wrong 0x4000 windows and corrupts uPD7759 sample playback.
-     */
+    /* Shadow Dancer's PCM sample ROM (mpr-12715.b4) is 0x40000. shdancer is a
+     * System 18 board (2x YM3438 + RF5C68) so this System-16B uPD7759 banked
+     * window is not the real sound path -- it stays in-bounds so the loader is
+     * safe, but audio is best-effort/quiet on this port. */
     unsigned bankoffs = ((data & 0x08u) >> 3) * 0x20000u;
     bankoffs += (data & 0x07u) * 0x4000u;
-    bankoffs %= 0x20000u;
+    bankoffs %= 0x40000u;
 #if SHINOBI_AUDIO_RUST
     for (unsigned i = 0; i < 0x6000u; i++)
-        audmem[0x8000u + i] = shinobi_rom_sample[(bankoffs + i) & 0x1ffffu];
+        audmem[0x8000u + i] = shinobi_rom_sample[(bankoffs + i) & 0x3ffffu];
 #else
     for (unsigned i = 0; i < 0x6000u; i++)
-        z80.memory[0x8000u + i] = shinobi_rom_sample[(bankoffs + i) & 0x1ffffu];
+        z80.memory[0x8000u + i] = shinobi_rom_sample[(bankoffs + i) & 0x3ffffu];
 #endif
 }
 
@@ -615,7 +614,7 @@ static void upd_update_adpcm(int data)
 static uint8_t upd_data(void)
 {
     if (!upd_mode_slave && shinobi_rom_sample)
-        return shinobi_rom_sample[upd_offset & 0x1ffffu];
+        return shinobi_rom_sample[upd_offset & 0x3ffffu];
     return upd_fifo;
 }
 

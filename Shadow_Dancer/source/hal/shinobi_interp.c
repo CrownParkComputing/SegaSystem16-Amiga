@@ -24,6 +24,7 @@
 extern void shinobi_render(uint8_t *gbase);
 extern void shinobi_set_screen_flip(int flip);
 extern void shinobi_set_tile_bank(int which, int bank);
+extern void shinobi_set_tile_bank8(uint8_t data);   /* System-18 8-bank (port H) */
 extern void shinobi_mark_palette_dirty(void);
 extern void shinobi_mark_tile_dirty(unsigned addr);
 extern void shinobi_audio_command(uint8_t v);
@@ -36,6 +37,7 @@ static uint8_t dsw1 = 0xff, dsw2 = 0xff;
 static uint8_t misc_output = 0x00;
 static uint8_t mapper_regs[0x20];
 static uint8_t tile_bank_regs[2] = { 0, 1 };
+static uint8_t tile_bank8_latch = 0;   /* last System-18 port-H tile-bank byte */
 static unsigned frame_counter;
 
 extern struct DosLibrary *DOSBase;
@@ -167,7 +169,9 @@ int shinobi_state_save(void)
     hdr.reg_count = (uint32_t)(sizeof state_regs / sizeof state_regs[0]);
     hdr.frame_counter = frame_counter;
     memcpy(hdr.mapper_regs, mapper_regs, sizeof mapper_regs);
-    memcpy(hdr.tile_bank_regs, tile_bank_regs, sizeof tile_bank_regs);
+    /* Persist the System-18 port-H tile-bank byte (the second slot is unused). */
+    hdr.tile_bank_regs[0] = tile_bank8_latch;
+    hdr.tile_bank_regs[1] = 0;
     hdr.input_state[0] = in_service;
     hdr.input_state[1] = in_p1;
     hdr.input_state[2] = in_p2;
@@ -234,8 +238,8 @@ int shinobi_state_load(void)
     m68k_set_irq(0);
 
     shinobi_mark_palette_dirty();
-    shinobi_set_tile_bank(0, tile_bank_regs[0]);
-    shinobi_set_tile_bank(1, tile_bank_regs[1]);
+    tile_bank8_latch = hdr.tile_bank_regs[0];
+    shinobi_set_tile_bank8(tile_bank8_latch);
     shinobi_set_screen_flip((misc_output & 0x40) != 0);
     return 1;
 }
@@ -245,7 +249,8 @@ enum mapped_kind {
     MAP_ROM,
     MAP_RAM,
     MAP_IO,
-    MAP_TILEBANK
+    MAP_TILEBANK,
+    MAP_VDP          /* System-18 Genesis VDP window: reads 0, writes ignored */
 };
 
 struct map_hit {
@@ -320,8 +325,12 @@ static int mapper_lookup(unsigned a, struct map_hit *hit)
             }
             break;
         case 2:
+            /* System-18 (ROM_BOARD_171_SHADOW): mapper region 2 is NOT a tile-bank
+             * latch (that was the 16B assumption).  It is the Genesis VDP window,
+             * which we do not emulate -- treat it as a harmless stub so the game's
+             * VDP writes no longer corrupt the tile banks. */
             if (compute_region(i, 0x10000u, 0xff0000u, 0, a, &off)) {
-                hit->kind = MAP_TILEBANK; hit->backing = 0; hit->offset = off; return 1;
+                hit->kind = MAP_VDP; hit->backing = 0; hit->offset = off; return 1;
             }
             break;
         case 3:
@@ -381,6 +390,17 @@ static unsigned read_bytes(unsigned a, int size)
     if (mapper_lookup(a, &hit)) {
         if (hit.kind == MAP_IO)
             return io_read_offset(hit.offset, size);
+        if (hit.kind == MAP_VDP) {
+            /* Minimal Genesis-VDP status stub: the game polls the VDP control port
+             * for frame sync. Returning a flat value stalls it (attract never
+             * advances -> tile banks never programmed -> gibberish bg). Toggle the
+             * VBLANK bit (0x0008) so frame-wait loops progress, and keep FIFO-empty
+             * (0x0200) set so DMA/write-ready waits don't stall. */
+            static unsigned vdp_ctr;
+            vdp_ctr++;
+            unsigned st = 0x0200u | ((vdp_ctr & 0x04u) ? 0x0008u : 0u);
+            return size == 1 ? (st & 0xff) : st;
+        }
         if (hit.kind == MAP_TILEBANK)
             return size == 1 ? 0xff : size == 2 ? 0xffff : 0xffffffffu;
         if (hit.kind == MAP_ROM || hit.kind == MAP_RAM) {
@@ -464,12 +484,27 @@ static void write_bytes(unsigned a, unsigned v, int size)
             return;
         if (hit.kind == MAP_IO) {
             unsigned word_off = (hit.offset >> 1) & 0x1fff;
+            /* 315-5296 I/O chip occupies the two sub-windows where bit 0x1000 is
+             * clear (misc_io_w cases 0x0000/2 and 0x1000/2); register select is
+             * word_off & 0x3f.  Port H (register 7) is wired to segas18's
+             * rom_5874_bank_w -> the System-18 8-way tile-bank latch. */
+            if ((word_off & 0x1000) == 0 && (word_off & 0x3f) == 7) {
+                tile_bank8_latch = (uint8_t)v;
+                shinobi_set_tile_bank8((uint8_t)v);
+                return;
+            }
             if ((word_off & (0x3000 / 2)) == 0) {
                 misc_output = (uint8_t)v;
-                shinobi_set_screen_flip((misc_output & 0x40) != 0);
+                /* System 18: bit 0x40 of the 315-5296 I/O region is NOT the screen
+                 * flip (that region is the I/O chip / tile-bank port H, not the
+                 * video-control flip). Deriving flip here spuriously rotated the
+                 * whole frame 180 deg. Shadow Dancer's attract/play are upright. */
+                shinobi_set_screen_flip(0);
             }
             return;
         }
+        if (hit.kind == MAP_VDP)
+            return;   /* unemulated Genesis VDP -> writes ignored */
         if (hit.kind == MAP_TILEBANK) {
             set_tile_bank_latch((int)((hit.offset >> 1) & 1u), (int)(v & 7u));
             return;
@@ -545,9 +580,10 @@ int shinobi_dyntrans_init(void){
     for (int i = 0; i < 0x20; i++) mapper_regs[i] = 0;
     tile_bank_regs[0] = 0;
     tile_bank_regs[1] = 1;
+    tile_bank8_latch = 0;
     frame_counter = 0;
-    shinobi_set_tile_bank(0, tile_bank_regs[0]);
-    shinobi_set_tile_bank(1, tile_bank_regs[1]);
+    /* Leave the renderer's 8 tile banks at their identity default until the game
+     * programs port H; the legacy 2-arg setter is now a no-op. */
     for (long i=0;i<0x80000;i++) gbase[i] = shinobi_rom_main[i];   /* ROM -> guest $0 */
     m68k_init(); m68k_set_cpu_type(M68K_CPU_TYPE_68000);
     m68k_set_int_ack_callback(int_ack);
@@ -560,7 +596,7 @@ void shinobi_dyntrans_set_inputs(uint8_t p1, uint8_t p2, uint8_t svc, uint8_t d1
 static int frame_rendered = 1;
 int shinobi_dyntrans_rendered(void) { return frame_rendered; }
 void shinobi_dyntrans_frame(void){
-    int remaining = 166666;   /* full 10MHz/60fps System16B frame (was 90000 = ~54% speed) */
+    int remaining = 90000;
     m68k_set_irq(4);
     while (remaining > 0) {
         int slice = remaining > 20000 ? 20000 : remaining;

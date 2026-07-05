@@ -66,7 +66,9 @@ static int notify_ticks;
 #define DISP_MAXH 1080
 static int colmap[DISP_MAXW], rowmap[DISP_MAXH];
 static uint8_t keydown[128];
-static uint8_t shinobi_dsw1 = 0xff, shinobi_dsw2 = 0x7c;
+/* Shadow Dancer factory DIP defaults: DSW1 (coinage) = 1C/1C both = 0xff;
+ * DSW2 = 2CtS Off(0x01) | Demo On(0x00) | 3 Lives(0x0c) | Normal(0x30) | Time 3.00(0xc0) = 0xfd */
+static uint8_t shinobi_dsw1 = 0xff, shinobi_dsw2 = 0xfd;
 
 static volatile int g_quit;
 static ULONG eclock_rate, frame_ticks, next_tick;
@@ -114,21 +116,20 @@ static const ai_dip_opt shinobi_coin_b[] = {
     {0xe0,"1C 2C"}, {0xd0,"1C 3C"}, {0xc0,"1C 4C"}, {0xb0,"1C 5C"},
     {0xa0,"1C 6C"}, {0x00,"FREE/1C 1C"}
 };
-static const ai_dip_opt shinobi_cabinet[] = { {0x00,"UPRIGHT"}, {0x01,"COCKTAIL"} };
+/* Shadow Dancer DSW2 (options) -- from `mame -listxml shdancer` <dipswitch> */
+static const ai_dip_opt shinobi_2cts[] = { {0x01,"OFF"}, {0x00,"ON"} };
 static const ai_dip_opt shinobi_demo[] = { {0x02,"OFF"}, {0x00,"ON"} };
-static const ai_dip_opt shinobi_lives[] = { {0x08,"2"}, {0x0c,"3"}, {0x04,"5"}, {0x00,"FREE PLAY"} };
+static const ai_dip_opt shinobi_lives[] = { {0x00,"2"}, {0x0c,"3"}, {0x08,"4"}, {0x04,"5"} };
 static const ai_dip_opt shinobi_diff[] = { {0x20,"EASY"}, {0x30,"NORMAL"}, {0x10,"HARD"}, {0x00,"HARDEST"} };
-static const ai_dip_opt shinobi_bullet[] = { {0x40,"SLOW"}, {0x00,"FAST"} };
-static const ai_dip_opt shinobi_lang[] = { {0x80,"JAPANESE"}, {0x00,"ENGLISH"} };
+static const ai_dip_opt shinobi_time[] = { {0x00,"2.20"}, {0x40,"2.40"}, {0xc0,"3.00"}, {0x80,"3.30"} };
 static const ai_dip_item shinobi_dip_items[] = {
     {"COIN A",0,0x0f,16,shinobi_coin_a},
     {"COIN B",0,0xf0,16,shinobi_coin_b},
-    {"CABINET",1,0x01,2,shinobi_cabinet},
+    {"2 CREDITS TO START",1,0x01,2,shinobi_2cts},
     {"DEMO SOUNDS",1,0x02,2,shinobi_demo},
     {"LIVES",1,0x0c,4,shinobi_lives},
     {"DIFFICULTY",1,0x30,4,shinobi_diff},
-    {"BULLET SPEED",1,0x40,2,shinobi_bullet},
-    {"LANGUAGE",1,0x80,2,shinobi_lang}
+    {"TIME ADJUST",1,0xc0,4,shinobi_time}
 };
 static void shinobi_apply_dips(void *ctx)
 {
@@ -159,7 +160,7 @@ static const char *shinobi_intro_status(void *ctx)
     if (g_ok) return "READY";
     if (g_init_failed) return shinobi_assets_error();
     if (g_init_attempted) return "INITIALISING";
-    return "LOADING SHINOBI ROMS";
+    return "LOADING SHADOW DANCER ROMS";
 }
 static int shinobi_intro_failed(void *ctx)
 {
@@ -177,8 +178,8 @@ static int shinobi_intro_resume(void *ctx)
     return g_ok && shinobi_state_load();
 }
 static const ai_config shinobi_intro_cfg = {
-    "SHINOBI",
-    "WHITTY ARCADE PRESENTS SHINOBI    SEGA 1987 SYSTEM 16B HARDWARE    MAIN 68000 RUNS IN A MUSASHI INTERPRETER WITH ORIGINAL TILEMAP TEXT SPRITE AND SCROLL RAM PRESENTED THROUGH AN 864 BY 486 RTG SCREEN    ROMS ARE LOADED AT RUNTIME FROM YOUR SHARED ROM FOLDER    PRESS FIRE OR START WHEN READY    ",
+    "SHADOW DANCER",
+    "WHITTY ARCADE PRESENTS SHADOW DANCER    SEGA 1989 SYSTEM 16B HARDWARE    MAIN 68000 RUNS IN A MUSASHI INTERPRETER WITH ORIGINAL TILEMAP TEXT SPRITE AND SCROLL RAM PRESENTED THROUGH AN 864 BY 486 RTG SCREEN    ROMS ARE LOADED AT RUNTIME FROM YOUR SHARED ROM FOLDER    PRESS FIRE OR START WHEN READY    ",
     shinobi_intro_keys, shinobi_intro_pad,
     ai_default_mod, ai_default_mod_end,
     0, 150,

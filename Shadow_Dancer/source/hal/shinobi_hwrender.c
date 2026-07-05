@@ -189,7 +189,7 @@ static inline uint16_t textw(unsigned off){ unsigned a=0x410000u+off; return (ui
 static inline uint16_t palw (unsigned idx){ unsigned a=0x840000u+idx*2; return (uint16_t)((G[a]<<8)|G[a+1]); }
 static inline uint16_t sprw (unsigned wi){  return (uint16_t)((shinobi_gfx_spr[wi*2]<<8)|shinobi_gfx_spr[wi*2+1]); }
 
-#define NTILES (0x20000/8)          /* 16384 */
+#define NTILES (0x40000/8)          /* 32768 -- Shadow Dancer: 3x 0x40000 tile planes */
 static uint8_t *s_tilepix;          /* decoded tile pens: NTILES * 64 */
 
 static void decode_tiles_once(void)
@@ -241,7 +241,15 @@ static int      s_fixed_palette_ready;
 static uint8_t *s_pagepix;
 static uint8_t *s_pagemask;
 static uint16_t s_page_dirty = 0xffffu;
-static uint8_t s_tile_bank[2] = { 0, 1 };
+/* System-18 (ROM_BOARD_171_SHADOW) uses 8 tile sub-banks of 0x400 tiles each
+ * (segaic16 banksize = 0x2000/8 = 0x400). Default = identity mapping, matching
+ * MAME's tilemap_init (bank[i] = i) until the game programs port H. */
+static uint8_t s_tile_bank[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+
+/* Host render-harness diagnostics (tools/shdancer_render.c). Purely additive:
+ * these counters do not affect any rendering behaviour. */
+static unsigned s_diag_tb8_calls = 0;
+static uint8_t  s_diag_tb8_last  = 0;
 
 static uint8_t rgb332(unsigned r, unsigned g, unsigned b)
 {
@@ -286,20 +294,40 @@ void shinobi_mark_tile_dirty(unsigned addr)
     s_page_dirty |= (uint16_t)(1u << ((off >> 12) & 15));
 }
 
+/* Legacy 2-bank (System-16B) entry point.  System-18 banking is driven entirely
+ * by shinobi_set_tile_bank8() (port H), so this is now a harmless no-op kept only
+ * so the interpreter's existing save-state/init callers still link. */
 void shinobi_set_tile_bank(int which, int bank)
 {
-    if ((unsigned)which >= 2)
-        return;
-    bank &= 7;
-    if (s_tile_bank[which] == (uint8_t)bank)
-        return;
-    s_tile_bank[which] = (uint8_t)bank;
-    s_page_dirty = 0xffffu;
+    (void)which;
+    (void)bank;
+}
+
+/* System-18 tile banking (segas18 rom_5874_bank_w): one port-H byte sets all 8
+ * sub-banks -- low nibble drives banks 0..3, high nibble drives banks 4..7,
+ * each spaced *4 with +i so a nibble selects a contiguous 0x1000-tile group. */
+void shinobi_set_tile_bank8(uint8_t data)
+{
+    s_diag_tb8_calls++;
+    s_diag_tb8_last = data;
+    int changed = 0;
+    for (int i = 0; i < 4; i++) {
+        uint8_t lo = (uint8_t)((data & 0x0f) * 4 + i);
+        uint8_t hi = (uint8_t)(((data >> 4) & 0x0f) * 4 + i);
+        if (s_tile_bank[0 + i] != lo) { s_tile_bank[0 + i] = lo; changed = 1; }
+        if (s_tile_bank[4 + i] != hi) { s_tile_bank[4 + i] = hi; changed = 1; }
+    }
+    if (changed)
+        s_page_dirty = 0xffffu;
 }
 
 static inline int tile_banked_code(int code)
 {
-    return (int)s_tile_bank[(code >> 12) & 1] * 0x1000 + (code & 0x0fff);
+    /* 13-bit tile code -> 8 sub-banks of 0x400 (banksize = 0x2000/8).  Bank
+     * values run 0..0x3f, so the mapped index can reach 0xffff; wrap into the
+     * decoded tile set (NTILES is a power of two) so it never runs off s_tilepix. */
+    int t = (int)s_tile_bank[(code >> 10) & 7] * 0x400 + (code & 0x3ff);
+    return t & (NTILES - 1);
 }
 
 /* ---- chunky pen frame ---- */
@@ -503,7 +531,9 @@ static void draw_text(void){
             int col=(tx>>3)&63;
             int tindex=row*64+col;
             uint16_t w=textw(tindex*2);
-            int color=(w>>9)&7, code=(int)s_tile_bank[0] * 0x1000 + (w & 0x1ff);
+            /* text layer: tilemap_16b_text_info -> bank[0]*banksize + (data&0x1ff),
+             * banksize = 0x400 for the System-18 8-bank scheme. */
+            int color=(w>>9)&7, code=((int)s_tile_bank[0] * 0x400 + (w & 0x1ff)) & (NTILES - 1);
             int pen=tile_pix(code, tx&7, sy&7);
             if(pen==0)continue;
             put_native(sx, sy, s_idx2pen[(color*8+pen)&0x7ff]);
@@ -513,7 +543,14 @@ static void draw_text(void){
 
 /* draw the 315-5196 sprite list (faithful to sega16sp.cpp; software, with zoom) */
 #define SPRPAL_BASE 0x400
-#define SPR_NUMBANKS (0x80000/0x20000)   /* Shinobi has 4 sprite banks (0x80000 region) */
+/* Shadow Dancer sprite region is 0x200000. The sega_sys16b_sprite_device (used
+ * by both System 16B and shdancer's System 18 board) computes
+ *   numbanks = region_bytes / 0x20000  and  spritedata = base + 0x10000*bank
+ * (see MAME sega16sp.cpp sega_sys16b_sprite_device::draw), so 0x200000/0x20000
+ * = 16 banks. (The "8" figure conflates the 0x40000 ROM size with the 0x20000
+ * hardware bank unit; the device unit is 0x20000, matching sbase=0x10000*bank
+ * below.) */
+#define SPR_NUMBANKS (0x200000/0x20000)  /* 16 sprite banks (0x20000 bytes each) */
 static inline void plot_spr(int x,int y,int colpri){
     int pix=colpri&0xf;
     if(pix==0||pix==15)return;
@@ -652,3 +689,31 @@ void shinobi_render(uint8_t *gbase)
 const unsigned char *shinobi_chunky(void)        { return &s_native[0][0]; }
 const unsigned char *shinobi_pal256(int *npens)  { if (npens) *npens = s_npens; return s_pal256; }
 void shinobi_dims(int *w, int *h)                { if (w) *w = SW; if (h) *h = SH; }
+
+/* ---- host render-harness diagnostics ----
+ * calls          = number of System-18 port-H tile-bank writes (shinobi_set_tile_bank8)
+ * last           = last data byte written to port H
+ * banks_out[8]   = the resulting 8 tile sub-bank values
+ * sprite_entries = active sprite-list entries before the 0x8000 terminator
+ *                  (-1 if no frame has been rendered yet, so G is still 0). */
+void shinobi_diag_get(unsigned *calls, unsigned *last,
+                      unsigned char banks_out[8], int *sprite_entries)
+{
+    if (calls) *calls = s_diag_tb8_calls;
+    if (last)  *last  = s_diag_tb8_last;
+    if (banks_out)
+        for (int i = 0; i < 8; i++) banks_out[i] = s_tile_bank[i];
+    if (sprite_entries) {
+        int n = -1;
+        if (G) {
+            n = 0;
+            for (int e = 0; e < 0x800 / 16; e++) {
+                const uint8_t *d = G + 0x440000u + (unsigned)e * 16u;
+                uint16_t s2 = (uint16_t)((d[4] << 8) | d[5]);
+                if (s2 & 0x8000) break;   /* sprite-list terminator (segas16 sprite dev) */
+                n++;
+            }
+        }
+        *sprite_entries = n;
+    }
+}
